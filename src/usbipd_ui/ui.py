@@ -25,6 +25,8 @@ class UsbipdUiApp:
         self.startup_profile_path_var = tk.StringVar(value=self.config.startup_profile_path)
         self.auto_share_on_startup_var = tk.BooleanVar(value=self.config.auto_share_on_startup)
         self.batch_share_online_only_var = tk.BooleanVar(value=self.config.batch_share_online_only)
+        self.enable_logging_var = tk.BooleanVar(value=self.config.enable_logging)
+        self.show_log_panel_var = tk.BooleanVar(value=self.config.show_log_panel)
         self.status_var = tk.StringVar(value="Ready")
 
         self._devices: list[UsbDevice] = []
@@ -33,6 +35,7 @@ class UsbipdUiApp:
         self._startup_batch_attempted = False
 
         self._build_ui()
+        self._toggle_log_panel()
         self._schedule_refresh(immediate=True)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -58,6 +61,15 @@ class UsbipdUiApp:
         ttk.Checkbutton(top, text="Batch share online devices only", variable=self.batch_share_online_only_var).grid(
             row=4, column=1, sticky=tk.W, pady=(2, 0)
         )
+        ttk.Checkbutton(top, text="Enable logging", variable=self.enable_logging_var).grid(
+            row=5, column=1, sticky=tk.W, pady=(2, 0)
+        )
+        ttk.Checkbutton(
+            top,
+            text="Show log panel",
+            variable=self.show_log_panel_var,
+            command=self._toggle_log_panel,
+        ).grid(row=6, column=1, sticky=tk.W, pady=(2, 0))
 
         top.columnconfigure(1, weight=1)
 
@@ -92,10 +104,10 @@ class UsbipdUiApp:
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         yscroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        log_frame = ttk.LabelFrame(self.root, text="Operation Log", padding=(8, 6))
-        log_frame.pack(fill=tk.BOTH, expand=False, padx=12, pady=(0, 8))
-        self.log_text = tk.Text(log_frame, height=8, state=tk.DISABLED, wrap=tk.WORD)
-        log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
+        self.log_frame = ttk.LabelFrame(self.root, text="Operation Log", padding=(8, 6))
+        self.log_frame.pack(fill=tk.BOTH, expand=False, padx=12, pady=(0, 8))
+        self.log_text = tk.Text(self.log_frame, height=8, state=tk.DISABLED, wrap=tk.WORD)
+        log_scroll = ttk.Scrollbar(self.log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=log_scroll.set)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -118,12 +130,23 @@ class UsbipdUiApp:
         self.root.destroy()
 
     def _append_log(self, message: str) -> None:
+        if not self.enable_logging_var.get():
+            return
+
         timestamp = datetime.now().strftime("%H:%M:%S")
         line = f"[{timestamp}] {message}\n"
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.insert(tk.END, line)
         self.log_text.see(tk.END)
         self.log_text.configure(state=tk.DISABLED)
+
+    def _toggle_log_panel(self) -> None:
+        if self.show_log_panel_var.get():
+            if not self.log_frame.winfo_manager():
+                self.log_frame.pack(fill=tk.BOTH, expand=False, padx=12, pady=(0, 8))
+        else:
+            if self.log_frame.winfo_manager():
+                self.log_frame.pack_forget()
 
     def _browse_startup_profile_path(self) -> None:
         selected = filedialog.askopenfilename(
@@ -146,9 +169,12 @@ class UsbipdUiApp:
             startup_profile_path=self.startup_profile_path_var.get().strip(),
             auto_share_on_startup=bool(self.auto_share_on_startup_var.get()),
             batch_share_online_only=bool(self.batch_share_online_only_var.get()),
+            enable_logging=bool(self.enable_logging_var.get()),
+            show_log_panel=bool(self.show_log_panel_var.get()),
         )
         save_config(self.config_path, config)
         self.config = config
+        self._toggle_log_panel()
         self.status_var.set("Configuration saved")
         self._append_log("Configuration saved")
         self._schedule_refresh(immediate=False)

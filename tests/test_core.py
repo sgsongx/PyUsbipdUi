@@ -21,6 +21,8 @@ class ConfigTests(unittest.TestCase):
             cfg = load_config(cfg_path)
             self.assertEqual(cfg.usbipd_path, "usbipd")
             self.assertEqual(cfg.refresh_seconds, 5)
+            self.assertTrue(cfg.enable_logging)
+            self.assertTrue(cfg.show_log_panel)
 
     def test_save_and_load_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -31,6 +33,8 @@ class ConfigTests(unittest.TestCase):
                 startup_profile_path=r"C:\\profiles\\lab.json",
                 auto_share_on_startup=True,
                 batch_share_online_only=False,
+                enable_logging=False,
+                show_log_panel=False,
             )
             save_config(cfg_path, expected)
             actual = load_config(cfg_path)

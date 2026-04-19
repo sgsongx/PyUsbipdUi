@@ -3,5 +3,7 @@
   "refresh_seconds": 5,
   "startup_profile_path": "",
   "auto_share_on_startup": false,
-  "batch_share_online_only": true
+  "batch_share_online_only": true,
+  "enable_logging": false,
+  "show_log_panel": false
 }
