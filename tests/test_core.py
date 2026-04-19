@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from usbipd_ui.config import AppConfig, load_config, save_config
-from usbipd_ui.profiles import load_share_profile, save_share_profile
+from usbipd_ui.profiles import load_share_profile, save_share_profile, select_batch_share_busids
 from usbipd_ui.usbipd import UsbDevice, parse_usbipd_list_output
 
 
@@ -23,7 +23,13 @@ class ConfigTests(unittest.TestCase):
     def test_save_and_load_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg_path = Path(tmp) / "config.json"
-            expected = AppConfig(usbipd_path=r"C:\\tools\\usbipd.exe", refresh_seconds=9)
+            expected = AppConfig(
+                usbipd_path=r"C:\\tools\\usbipd.exe",
+                refresh_seconds=9,
+                startup_profile_path=r"C:\\profiles\\lab.json",
+                auto_share_on_startup=True,
+                batch_share_online_only=False,
+            )
             save_config(cfg_path, expected)
             actual = load_config(cfg_path)
             self.assertEqual(expected, actual)
@@ -65,6 +71,21 @@ class ProfileTests(unittest.TestCase):
 
             busids = load_share_profile(file_path)
             self.assertEqual(busids, ["1-2", "3-1"])
+
+    def test_select_batch_share_busids_online_only(self):
+        devices = [
+            UsbDevice(busid="1-2", vid_pid="1234:abcd", device="Device A", state="Not shared", is_shared=False),
+            UsbDevice(busid="3-1", vid_pid="3333:4444", device="Device C", state="Shared", is_shared=True),
+        ]
+        targets, skipped = select_batch_share_busids(["1-2", "2-9", "3-1"], devices, online_only=True)
+        self.assertEqual(targets, ["1-2", "3-1"])
+        self.assertEqual(skipped, ["2-9"])
+
+    def test_select_batch_share_busids_without_filter(self):
+        devices = [UsbDevice(busid="1-2", vid_pid="1234:abcd", device="Device A", state="Not shared", is_shared=False)]
+        targets, skipped = select_batch_share_busids(["1-2", "2-9"], devices, online_only=False)
+        self.assertEqual(targets, ["1-2", "2-9"])
+        self.assertEqual(skipped, [])
 
 
 if __name__ == "__main__":

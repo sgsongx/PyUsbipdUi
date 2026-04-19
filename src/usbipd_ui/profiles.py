@@ -19,3 +19,19 @@ def load_share_profile(path: Path) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item).strip()]
+
+
+def select_batch_share_busids(profile_busids: list[str], devices: list[UsbDevice], online_only: bool) -> tuple[list[str], list[str]]:
+    if not online_only:
+        return profile_busids, []
+
+    online_busids = {device.busid for device in devices}
+    targets: list[str] = []
+    skipped: list[str] = []
+
+    for busid in profile_busids:
+        if busid in online_busids:
+            targets.append(busid)
+        else:
+            skipped.append(busid)
+    return targets, skipped

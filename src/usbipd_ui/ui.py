@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .config import AppConfig, load_config, save_config
-from .profiles import load_share_profile, save_share_profile
+from .profiles import load_share_profile, save_share_profile, select_batch_share_busids
 from .usbipd import UsbDevice, UsbipdError, UsbipdService
 
 
@@ -21,11 +22,15 @@ class UsbipdUiApp:
 
         self.usbipd_path_var = tk.StringVar(value=self.config.usbipd_path)
         self.refresh_seconds_var = tk.StringVar(value=str(self.config.refresh_seconds))
+        self.startup_profile_path_var = tk.StringVar(value=self.config.startup_profile_path)
+        self.auto_share_on_startup_var = tk.BooleanVar(value=self.config.auto_share_on_startup)
+        self.batch_share_online_only_var = tk.BooleanVar(value=self.config.batch_share_online_only)
         self.status_var = tk.StringVar(value="Ready")
 
         self._devices: list[UsbDevice] = []
         self._refresh_job: str | None = None
         self._refresh_running = False
+        self._startup_batch_attempted = False
 
         self._build_ui()
         self._schedule_refresh(immediate=True)
@@ -42,6 +47,17 @@ class UsbipdUiApp:
         ttk.Label(top, text="Refresh(s):").grid(row=1, column=0, sticky=tk.W, pady=(8, 0))
         ttk.Entry(top, textvariable=self.refresh_seconds_var, width=10).grid(row=1, column=1, sticky=tk.W, padx=6, pady=(8, 0))
         ttk.Button(top, text="Save Config", command=self._save_config).grid(row=1, column=2, pady=(8, 0), sticky=tk.E)
+
+        ttk.Label(top, text="Startup list:").grid(row=2, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Entry(top, textvariable=self.startup_profile_path_var, width=78).grid(row=2, column=1, sticky=tk.EW, padx=6, pady=(8, 0))
+        ttk.Button(top, text="Browse", command=self._browse_startup_profile_path).grid(row=2, column=2, pady=(8, 0))
+
+        ttk.Checkbutton(top, text="Auto share on startup", variable=self.auto_share_on_startup_var).grid(
+            row=3, column=1, sticky=tk.W, pady=(6, 0)
+        )
+        ttk.Checkbutton(top, text="Batch share online devices only", variable=self.batch_share_online_only_var).grid(
+            row=4, column=1, sticky=tk.W, pady=(2, 0)
+        )
 
         top.columnconfigure(1, weight=1)
 
@@ -76,6 +92,14 @@ class UsbipdUiApp:
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         yscroll.pack(side=tk.RIGHT, fill=tk.Y)
 
+        log_frame = ttk.LabelFrame(self.root, text="Operation Log", padding=(8, 6))
+        log_frame.pack(fill=tk.BOTH, expand=False, padx=12, pady=(0, 8))
+        self.log_text = tk.Text(log_frame, height=8, state=tk.DISABLED, wrap=tk.WORD)
+        log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
         status_bar = ttk.Label(self.root, textvariable=self.status_var, anchor=tk.W, relief=tk.SUNKEN)
         status_bar.pack(fill=tk.X, side=tk.BOTTOM)
 
@@ -93,6 +117,22 @@ class UsbipdUiApp:
             self._refresh_job = None
         self.root.destroy()
 
+    def _append_log(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        line = f"[{timestamp}] {message}\n"
+        self.log_text.configure(state=tk.NORMAL)
+        self.log_text.insert(tk.END, line)
+        self.log_text.see(tk.END)
+        self.log_text.configure(state=tk.DISABLED)
+
+    def _browse_startup_profile_path(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Select startup shared device list",
+            filetypes=[("JSON", "*.json"), ("All files", "*.*")],
+        )
+        if selected:
+            self.startup_profile_path_var.set(selected)
+
     def _save_config(self) -> None:
         try:
             refresh_seconds = max(1, int(self.refresh_seconds_var.get().strip()))
@@ -103,10 +143,14 @@ class UsbipdUiApp:
         config = AppConfig(
             usbipd_path=self.usbipd_path_var.get().strip() or "usbipd",
             refresh_seconds=refresh_seconds,
+            startup_profile_path=self.startup_profile_path_var.get().strip(),
+            auto_share_on_startup=bool(self.auto_share_on_startup_var.get()),
+            batch_share_online_only=bool(self.batch_share_online_only_var.get()),
         )
         save_config(self.config_path, config)
         self.config = config
         self.status_var.set("Configuration saved")
+        self._append_log("Configuration saved")
         self._schedule_refresh(immediate=False)
 
     def _service(self) -> UsbipdService:
@@ -166,6 +210,63 @@ class UsbipdUiApp:
                 ),
             )
         self.status_var.set(f"Refreshed {len(devices)} devices")
+        if not self._startup_batch_attempted and self.auto_share_on_startup_var.get():
+            self._startup_batch_attempted = True
+            startup_path = self.startup_profile_path_var.get().strip()
+            if startup_path:
+                self._append_log(f"Auto startup share from {startup_path}")
+                self._run_batch_share(Path(startup_path), from_startup=True)
+            else:
+                self._append_log("Auto startup share enabled but startup list is empty")
+
+    def _run_batch_share(self, path: Path, from_startup: bool = False) -> None:
+        try:
+            busids = load_share_profile(path)
+        except Exception as ex:  # noqa: BLE001
+            messagebox.showerror("Load failed", f"Failed to load file: {ex}")
+            self._append_log(f"Load list failed: {ex}")
+            return
+
+        if not busids:
+            messagebox.showinfo("No devices", "No busid found in the selected file")
+            self._append_log("Loaded profile has no busid")
+            return
+
+        online_only = bool(self.batch_share_online_only_var.get())
+        targets, skipped = select_batch_share_busids(busids, self._devices, online_only=online_only)
+        self._append_log(
+            f"Batch share start. Source={path.name}, requested={len(busids)}, target={len(targets)}, skipped_offline={len(skipped)}"
+        )
+
+        if skipped:
+            self._append_log(f"Skipped offline busid: {', '.join(skipped)}")
+
+        success = 0
+        failed: list[str] = []
+        service = self._service()
+        for busid in targets:
+            try:
+                service.bind(busid)
+                success += 1
+                self._append_log(f"Shared {busid}")
+            except UsbipdError as ex:
+                failed.append(busid)
+                self._append_log(f"Share failed {busid}: {ex}")
+
+        self._schedule_refresh(immediate=True)
+        if failed:
+            messagebox.showwarning(
+                "Batch share completed",
+                f"Success: {success}, Failed: {len(failed)}\nFailed busid: {', '.join(failed)}",
+            )
+        if not from_startup and not failed and success > 0:
+            messagebox.showinfo("Batch share completed", f"Shared {success} device(s)")
+        self.status_var.set(
+            f"Batch share done. Success: {success}, Failed: {len(failed)}, Skipped offline: {len(skipped)}"
+        )
+        self._append_log(
+            f"Batch share done. success={success}, failed={len(failed)}, skipped_offline={len(skipped)}"
+        )
 
     def _selected_busid(self) -> str | None:
         selection = self.tree.selection()
@@ -181,9 +282,11 @@ class UsbipdUiApp:
         try:
             self._service().bind(busid)
             self.status_var.set(f"Shared device {busid}")
+            self._append_log(f"Shared selected device {busid}")
             self._schedule_refresh(immediate=True)
         except UsbipdError as ex:
             messagebox.showerror("Share failed", str(ex))
+            self._append_log(f"Share selected failed {busid}: {ex}")
 
     def _unshare_selected(self) -> None:
         busid = self._selected_busid()
@@ -193,9 +296,11 @@ class UsbipdUiApp:
         try:
             self._service().unbind(busid)
             self.status_var.set(f"Unshared device {busid}")
+            self._append_log(f"Unshared selected device {busid}")
             self._schedule_refresh(immediate=True)
         except UsbipdError as ex:
             messagebox.showerror("Unshare failed", str(ex))
+            self._append_log(f"Unshare selected failed {busid}: {ex}")
 
     def _export_shared_list(self) -> None:
         if not self._devices:
@@ -214,6 +319,7 @@ class UsbipdUiApp:
         save_share_profile(path, self._devices)
         shared_count = len([d for d in self._devices if d.is_shared])
         self.status_var.set(f"Exported {shared_count} shared device(s) to {path.name}")
+        self._append_log(f"Exported shared profile to {path}")
 
     def _load_list_and_share(self) -> None:
         open_path = filedialog.askopenfilename(
@@ -224,33 +330,7 @@ class UsbipdUiApp:
             return
 
         path = Path(open_path)
-        try:
-            busids = load_share_profile(path)
-        except Exception as ex:  # noqa: BLE001
-            messagebox.showerror("Load failed", f"Failed to load file: {ex}")
-            return
-
-        if not busids:
-            messagebox.showinfo("No devices", "No busid found in the selected file")
-            return
-
-        success = 0
-        failed: list[str] = []
-        service = self._service()
-        for busid in busids:
-            try:
-                service.bind(busid)
-                success += 1
-            except UsbipdError:
-                failed.append(busid)
-
-        self._schedule_refresh(immediate=True)
-        if failed:
-            messagebox.showwarning(
-                "Batch share completed",
-                f"Success: {success}, Failed: {len(failed)}\nFailed busid: {', '.join(failed)}",
-            )
-        self.status_var.set(f"Batch share done. Success: {success}, Failed: {len(failed)}")
+        self._run_batch_share(path)
 
 
 def run_app(config_path: Path) -> None:
