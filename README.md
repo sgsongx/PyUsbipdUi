@@ -30,6 +30,8 @@ set PYTHONPATH=src
 python main.py
 ```
 
+On Windows, the app now auto-requests administrator privileges at startup through UAC. If launched without admin rights, it relaunches itself with elevated permissions after confirmation.
+
 ## Config
 
 The app saves config to `config.json` in project root:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -17,6 +18,15 @@ class UsbDevice:
 
 class UsbipdError(Exception):
     pass
+
+
+def build_windows_safe_subprocess_kwargs() -> dict[str, int]:
+    if os.name != "nt":
+        return {}
+
+    # Prevent console window flicker for repeated usbipd calls from GUI app.
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return {"creationflags": create_no_window}
 
 
 def parse_usbipd_list_output(output: str) -> list[UsbDevice]:
@@ -58,6 +68,7 @@ def parse_usbipd_list_output(output: str) -> list[UsbDevice]:
 
 
 def _run_usbipd_command(usbipd_path: str, args: list[str]) -> str:
+    process_kwargs = build_windows_safe_subprocess_kwargs()
     process = subprocess.run(
         [usbipd_path, *args],
         check=False,
@@ -65,6 +76,7 @@ def _run_usbipd_command(usbipd_path: str, args: list[str]) -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
+        **process_kwargs,
     )
     if process.returncode != 0:
         stderr = process.stderr.strip()

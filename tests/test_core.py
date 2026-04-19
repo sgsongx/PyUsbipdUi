@@ -3,13 +3,15 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+from unittest.mock import Mock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from usbipd_ui.config import AppConfig, load_config, save_config
+from usbipd_ui.elevation import ensure_admin_or_relaunch, get_elevated_python_executable
 from usbipd_ui.profiles import load_share_profile, save_share_profile, select_batch_share_busids
-from usbipd_ui.usbipd import UsbDevice, parse_usbipd_list_output
+from usbipd_ui.usbipd import UsbDevice, build_windows_safe_subprocess_kwargs, parse_usbipd_list_output
 
 
 class ConfigTests(unittest.TestCase):
@@ -54,6 +56,19 @@ GUID                                  DEVICE
         self.assertTrue(devices[2].is_shared)
 
 
+class SubprocessUiTests(unittest.TestCase):
+    def test_build_windows_safe_subprocess_kwargs_on_windows(self):
+        with patch("usbipd_ui.usbipd.os.name", "nt"):
+            kwargs = build_windows_safe_subprocess_kwargs()
+        self.assertIn("creationflags", kwargs)
+        self.assertNotEqual(kwargs["creationflags"], 0)
+
+    def test_build_windows_safe_subprocess_kwargs_on_non_windows(self):
+        with patch("usbipd_ui.usbipd.os.name", "posix"):
+            kwargs = build_windows_safe_subprocess_kwargs()
+        self.assertEqual(kwargs, {})
+
+
 class ProfileTests(unittest.TestCase):
     def test_save_and_load_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -86,6 +101,30 @@ class ProfileTests(unittest.TestCase):
         targets, skipped = select_batch_share_busids(["1-2", "2-9"], devices, online_only=False)
         self.assertEqual(targets, ["1-2", "2-9"])
         self.assertEqual(skipped, [])
+
+
+class ElevationTests(unittest.TestCase):
+    def test_get_elevated_python_executable_uses_pythonw_on_windows(self):
+        with patch("usbipd_ui.elevation.os.name", "nt"):
+            actual = get_elevated_python_executable(r"C:\\Python312\\python.exe")
+        self.assertEqual(actual, r"C:\\Python312\\pythonw.exe")
+
+    def test_get_elevated_python_executable_keeps_non_python_executable(self):
+        with patch("usbipd_ui.elevation.os.name", "nt"):
+            actual = get_elevated_python_executable(r"C:\\Tools\\mylauncher.exe")
+        self.assertEqual(actual, r"C:\\Tools\\mylauncher.exe")
+
+    def test_ensure_admin_returns_true_when_already_admin(self):
+        with patch("usbipd_ui.elevation.is_running_as_admin", return_value=True):
+            launcher = Mock()
+            self.assertTrue(ensure_admin_or_relaunch(launcher))
+            launcher.assert_not_called()
+
+    def test_ensure_admin_relaunches_and_returns_false_when_not_admin(self):
+        launcher = Mock()
+        with patch("usbipd_ui.elevation.is_running_as_admin", return_value=False):
+            self.assertFalse(ensure_admin_or_relaunch(launcher))
+        launcher.assert_called_once()
 
 
 if __name__ == "__main__":
